@@ -2,8 +2,8 @@
 
 ## 사전 준비 (파일 2개 필요)
 레포에 포함된 패치 파일:
-- `patch/dgformat.py`
-- `patch/riccidist2dgm.py`
+- `dgformat.py`
+- `riccidist2dgm.py`
 
 ---
 
