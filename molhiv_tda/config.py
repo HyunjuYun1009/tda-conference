@@ -13,6 +13,7 @@ SMILES_CSV = DATASET_ROOT / "ogbg_molhiv" / "mapping" / "hiv.csv"
 MW_CACHE = CACHE_ROOT / "molecular_weight.pt"
 BOND_TDA_CACHE = CACHE_ROOT / "bond_tda.pt"
 TDA_3D_CACHE = CACHE_ROOT / "tda_3d.pt"
+EDGE_DIST_CACHE = CACHE_ROOT / "edge_dist_3d.pt"
 MW_STATS_CACHE = CACHE_ROOT / "mw_stats.pt"
 TDA_STATS_CACHE = CACHE_ROOT / "tda_stats.pt"
 TDA_3D_STATS_CACHE = CACHE_ROOT / "tda_3d_stats.pt"
@@ -39,3 +40,6 @@ BOND_TDA_DIM = PI_RESOLUTION * PI_RESOLUTION * 2  # H0 + H1 persistence images
 RIPS_MAX_EDGE = 4.0
 RIPS_MAX_DIM = 2
 TDA_3D_DIM = PI_RESOLUTION * PI_RESOLUTION * 3  # H0, H1, H2
+
+# 3D distance filtration for PDGNN (conformer edge lengths)
+DIST_FILTRATION_TAUS = [1.5, 2.0, 2.5, 3.0, 4.0]

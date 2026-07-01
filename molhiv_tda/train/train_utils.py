@@ -20,6 +20,13 @@ def gather_graph_features(
     return feature_tensor[idx]
 
 
+def load_edge_dist_bank(path: Path) -> list[torch.Tensor]:
+    obj = torch.load(path, weights_only=False)
+    if isinstance(obj, dict) and "distances" in obj:
+        return obj["distances"]
+    return obj
+
+
 @torch.no_grad()
 def evaluate_model(
     model,
@@ -29,6 +36,7 @@ def evaluate_model(
     bond_tda: Optional[torch.Tensor] = None,
     mw: Optional[torch.Tensor] = None,
     tda_3d: Optional[torch.Tensor] = None,
+    edge_dist_bank: Optional[list[torch.Tensor]] = None,
 ) -> Dict[str, float]:
     model.eval()
     y_true = []
@@ -36,18 +44,9 @@ def evaluate_model(
 
     for batch in loader:
         batch = batch.to(device)
-        kwargs = {}
-        if bond_tda is not None:
-            kwargs["bond_tda"] = gather_graph_features(batch, bond_tda.to(device))
-        if mw is not None:
-            kwargs["mw"] = gather_graph_features(batch, mw.to(device))
-        if tda_3d is not None:
-            kwargs["tda_3d"] = gather_graph_features(batch, tda_3d.to(device))
-
-        if kwargs:
-            pred = model(batch, **kwargs)
-        else:
-            pred = model(batch)
+        pred = _forward_model(
+            model, batch, bond_tda, mw, tda_3d, edge_dist_bank, device
+        )
 
         y_true.append(batch.y.view(batch.y.size(0), -1).detach().cpu())
         y_pred.append(pred.view(pred.size(0), -1).detach().cpu())
@@ -58,6 +57,31 @@ def evaluate_model(
     return {"rocauc": evaluator.eval(input_dict)["rocauc"]}
 
 
+def _forward_model(
+    model,
+    batch,
+    bond_tda,
+    mw,
+    tda_3d,
+    edge_dist_bank,
+    device,
+):
+    if edge_dist_bank is not None:
+        mw_b = gather_graph_features(batch, mw.to(device))
+        return model(batch, edge_dist_bank, mw_b)
+
+    kwargs = {}
+    if bond_tda is not None:
+        kwargs["bond_tda"] = gather_graph_features(batch, bond_tda.to(device))
+    if mw is not None:
+        kwargs["mw"] = gather_graph_features(batch, mw.to(device))
+    if tda_3d is not None:
+        kwargs["tda_3d"] = gather_graph_features(batch, tda_3d.to(device))
+    if kwargs:
+        return model(batch, **kwargs)
+    return model(batch)
+
+
 def train_one_epoch(
     model,
     loader,
@@ -66,6 +90,7 @@ def train_one_epoch(
     bond_tda: Optional[torch.Tensor] = None,
     mw: Optional[torch.Tensor] = None,
     tda_3d: Optional[torch.Tensor] = None,
+    edge_dist_bank: Optional[list[torch.Tensor]] = None,
 ) -> float:
     model.train()
     total_loss = 0.0
@@ -75,18 +100,9 @@ def train_one_epoch(
         batch = batch.to(device)
         optimizer.zero_grad()
 
-        kwargs = {}
-        if bond_tda is not None:
-            kwargs["bond_tda"] = gather_graph_features(batch, bond_tda.to(device))
-        if mw is not None:
-            kwargs["mw"] = gather_graph_features(batch, mw.to(device))
-        if tda_3d is not None:
-            kwargs["tda_3d"] = gather_graph_features(batch, tda_3d.to(device))
-
-        if kwargs:
-            pred = model(batch, **kwargs)
-        else:
-            pred = model(batch)
+        pred = _forward_model(
+            model, batch, bond_tda, mw, tda_3d, edge_dist_bank, device
+        )
 
         is_labeled = batch.y == batch.y
         loss = F.binary_cross_entropy_with_logits(
@@ -114,6 +130,7 @@ def run_training(
     bond_tda: Optional[torch.Tensor] = None,
     mw: Optional[torch.Tensor] = None,
     tda_3d: Optional[torch.Tensor] = None,
+    edge_dist_bank: Optional[list[torch.Tensor]] = None,
 ) -> Dict[str, float]:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     best_valid = -1.0
@@ -130,6 +147,7 @@ def run_training(
             bond_tda=bond_tda,
             mw=mw,
             tda_3d=tda_3d,
+            edge_dist_bank=edge_dist_bank,
         )
         valid_score = evaluate_model(
             model,
@@ -139,6 +157,7 @@ def run_training(
             bond_tda=bond_tda,
             mw=mw,
             tda_3d=tda_3d,
+            edge_dist_bank=edge_dist_bank,
         )["rocauc"]
         test_score = evaluate_model(
             model,
@@ -148,6 +167,7 @@ def run_training(
             bond_tda=bond_tda,
             mw=mw,
             tda_3d=tda_3d,
+            edge_dist_bank=edge_dist_bank,
         )["rocauc"]
 
         if valid_score > best_valid:
