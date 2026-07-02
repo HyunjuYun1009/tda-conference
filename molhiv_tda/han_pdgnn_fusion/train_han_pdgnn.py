@@ -53,8 +53,17 @@ def train_one_epoch(model, loader, optimizer, device):
     return total_loss / max(total_graphs, 1)
 
 
-def run_training(cfg: dict, model_name: str, args):
-    set_seed(args.seed)
+def run_training(
+    cfg: dict,
+    model_name: str,
+    *,
+    seed: int = 0,
+    max_samples: int | None = None,
+    run_name: str | None = None,
+    results_subdir: str | None = None,
+    save_checkpoint: bool = True,
+) -> dict:
+    set_seed(seed)
     device = resolve_device(cfg.get("device", "auto"))
     print(f"Device: {device}")
 
@@ -66,7 +75,7 @@ def run_training(cfg: dict, model_name: str, args):
         batch_size=cfg["batch_size"],
         num_workers=cfg.get("num_workers", 0),
         node_type_mode=cfg["node_type_mode"],
-        max_samples=args.max_samples,
+        max_samples=max_samples,
     )
 
     model = build_model(model_name, cfg, num_tasks=dataset.num_tasks).to(device)
@@ -82,9 +91,11 @@ def run_training(cfg: dict, model_name: str, args):
     stale = 0
     patience = cfg.get("patience", 10)
 
-    results_dir = PROJECT_ROOT / cfg.get("results_dir", "results")
+    tag = run_name or model_name
+    base_results = PROJECT_ROOT / cfg.get("results_dir", "results")
+    results_dir = base_results / results_subdir if results_subdir else base_results
     results_dir.mkdir(parents=True, exist_ok=True)
-    ckpt_path = results_dir / f"han_pdgnn_{model_name}_best.pt"
+    ckpt_path = results_dir / f"han_pdgnn_{tag}_best.pt"
 
     for epoch in range(1, cfg["epochs"] + 1):
         loss = train_one_epoch(model, loaders["train"], optimizer, device)
@@ -98,7 +109,8 @@ def run_training(cfg: dict, model_name: str, args):
             best_valid = valid_auc
             best_test = test_auc
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
-            save_checkpoint(ckpt_path, model, optimizer, epoch, {"valid_rocauc": valid_auc})
+            if save_checkpoint:
+                save_checkpoint(ckpt_path, model, optimizer, epoch, {"valid_rocauc": valid_auc})
             stale = 0
         else:
             stale += 1
@@ -111,11 +123,13 @@ def run_training(cfg: dict, model_name: str, args):
 
     result = {
         "model": f"han_pdgnn_{model_name}",
+        "run_name": tag,
         "valid_rocauc": best_valid,
         "test_rocauc": best_test,
         "config": cfg,
+        "seed": seed,
     }
-    out_json = results_dir / f"han_pdgnn_{model_name}.json"
+    out_json = results_dir / f"han_pdgnn_{tag}.json"
     with open(out_json, "w", encoding="utf-8") as f:
         json.dump(result, f, indent=2)
     print(result)
@@ -155,7 +169,12 @@ def main():
 
     cfg = load_config(PROJECT_ROOT / args.config)
     cfg = apply_cli_overrides(cfg, args)
-    run_training(cfg, args.model, args)
+    run_training(
+        cfg,
+        args.model,
+        seed=args.seed,
+        max_samples=args.max_samples,
+    )
 
 
 if __name__ == "__main__":

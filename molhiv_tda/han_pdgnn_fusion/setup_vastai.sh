@@ -23,10 +23,9 @@ if command -v nvidia-smi >/dev/null 2>&1; then
   DRIVER_CUDA="$(nvidia-smi | sed -n 's/.*CUDA Version: \([0-9]\+\.[0-9]\+\).*/\1/p' | head -1)"
   case "$DRIVER_CUDA" in
     12.4|12.5) CUDA_TAG=cu124 ;;
-    12.6|12.7|12.8) CUDA_TAG=cu126 ;;
-    12.9|13.*) CUDA_TAG=cu128 ;;
+    12.6|12.7|12.8|12.9|13.*) CUDA_TAG=cu126 ;;
   esac
-  echo "Detected driver CUDA $DRIVER_CUDA -> PyTorch tag $CUDA_TAG"
+  echo "Detected driver CUDA $DRIVER_CUDA -> PyTorch/PyG tag $CUDA_TAG"
 fi
 
 TORCH_INDEX="https://download.pytorch.org/whl/${CUDA_TAG}"

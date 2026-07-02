@@ -3,14 +3,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-import gudhi
 import numpy as np
 import torch
 from rdkit import Chem
 from rdkit.Chem import AllChem
 
 from config import PI_RESOLUTION, PI_SIGMA, RIPS_MAX_DIM, RIPS_MAX_EDGE, TDA_3D_DIM
-from features.tda_utils import PersistencePoint, diagrams_to_vector, persistence_image
 
 
 def smiles_to_3d_points(smiles: str) -> Optional[np.ndarray]:
@@ -82,8 +80,12 @@ def points_to_persistence_diagrams(
     points: np.ndarray,
     max_edge_length: float = RIPS_MAX_EDGE,
     max_dimension: int = RIPS_MAX_DIM,
-) -> list[list[PersistencePoint]]:
+) -> list[list]:
     """Compute Vietoris-Rips persistence diagrams from a 3D point cloud."""
+    import gudhi
+
+    from features.tda_utils import PersistencePoint
+
     rips = gudhi.RipsComplex(points=points, max_edge_length=max_edge_length)
     st = rips.create_simplex_tree(max_dimension=max_dimension)
     st.compute_persistence()
@@ -111,6 +113,8 @@ def compute_3d_tda_vector(
     Compute 3D distance-filtration TDA vector.
     Returns (vector, success_flag).
     """
+    from features.tda_utils import persistence_image
+
     points = smiles_to_3d_points(smiles)
     if points is None or len(points) == 0:
         return np.zeros(TDA_3D_DIM, dtype=np.float32), False
