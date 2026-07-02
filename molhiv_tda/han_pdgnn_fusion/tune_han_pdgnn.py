@@ -36,6 +36,20 @@ def _load_search_space(path: Path) -> dict[str, list[Any]]:
     return obj["search_space"]
 
 
+def _normalize_constraints(raw: Any) -> dict[str, bool]:
+    if not raw:
+        return {}
+    if isinstance(raw, dict):
+        return {str(k): bool(v) for k, v in raw.items()}
+    if isinstance(raw, list):
+        merged: dict[str, bool] = {}
+        for item in raw:
+            if isinstance(item, dict):
+                merged.update({str(k): bool(v) for k, v in item.items()})
+        return merged
+    raise ValueError(f"Unsupported constraints format: {type(raw)}")
+
+
 def _valid_trial(params: dict, constraints: dict) -> bool:
     if constraints.get("hidden_dim_equals_model_dim"):
         if params["hidden_dim"] != params["model_dim"]:
@@ -130,7 +144,7 @@ def main():
     base_cfg = load_config(PROJECT_ROOT / args.config)
     search_obj = yaml.safe_load((PROJECT_ROOT / args.search_space).read_text(encoding="utf-8"))
     search_space = search_obj["search_space"]
-    constraints = search_obj.get("constraints", {})
+    constraints = _normalize_constraints(search_obj.get("constraints", {}))
 
     if args.epochs is not None:
         base_cfg["epochs"] = args.epochs

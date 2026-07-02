@@ -14,5 +14,5 @@ search_space:
 
 # Constraints applied after sampling (invalid trials are resampled).
 constraints:
-  - model_dim_divisible_by_num_attention_heads: true
-  - hidden_dim_equals_model_dim: true
+  model_dim_divisible_by_num_attention_heads: true
+  hidden_dim_equals_model_dim: true
