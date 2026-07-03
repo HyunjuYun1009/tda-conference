@@ -3,19 +3,51 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 
 
-def compute_bond_fractions(batch, num_bond_types: int = 5) -> torch.Tensor:
-    """Graph-level bond-type fractions [num_graphs, num_bond_types]."""
-    device = batch.edge_attr.device
-    bond_type = batch.edge_attr[:, 0].long().clamp(0, num_bond_types - 1)
-    src_graph = batch.batch[batch.edge_index[0]]
-    num_graphs = int(batch.num_graphs)
+def build_bond_pair_scale(
+    edge_index: torch.Tensor,
+    edge_attr: torch.Tensor,
+    batch: torch.Tensor,
+    batch_size: int,
+    max_nodes: int,
+    alpha: torch.Tensor,
+    num_bond_types: int = 5,
+) -> torch.Tensor:
+    """
+    Bond-type scale for each node pair within a graph.
 
-    counts = torch.zeros(num_graphs, num_bond_types, device=device)
-    counts.index_add_(0, src_graph, F.one_hot(bond_type, num_bond_types).float())
-    return counts / counts.sum(dim=-1, keepdim=True).clamp_min(1.0)
+    Returns:
+        scale [batch_size, max_nodes, max_nodes] where
+        scale[g, i, j] = alpha[bond_type] if nodes i,j share a bond in graph g, else 0.
+        Undirected: both (i, j) and (j, i) are set.
+    """
+    device = edge_attr.device
+    num_nodes = batch.size(0)
+    bond_type = edge_attr[:, 0].long().clamp(0, num_bond_types - 1)
+    src, dst = edge_index
+
+    scale = torch.zeros(batch_size, max_nodes, max_nodes, device=device)
+    global_to_local = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
+
+    for g in range(batch_size):
+        node_idx = (batch == g).nonzero(as_tuple=True)[0]
+        n = node_idx.size(0)
+        if n == 0:
+            continue
+        global_to_local[node_idx] = torch.arange(n, device=device)
+
+        edge_mask = (batch[src] == g) & (batch[dst] == g)
+        if not edge_mask.any():
+            continue
+        es, ed = src[edge_mask], dst[edge_mask]
+        bt = bond_type[edge_mask]
+        ls, ld = global_to_local[es], global_to_local[ed]
+        w = alpha[bt]
+        scale[g, ls, ld] = w
+        scale[g, ld, ls] = w
+
+    return scale
 
 
 class FusionMLP(nn.Module):
@@ -36,9 +68,12 @@ class GraphwiseCrossAttention(nn.Module):
     """
     Cross-attention where fused L attends to HAN (Z) and PDGNN (H) streams.
 
-    Bond-composition-modulated scaling (no additive bias):
-      scale = bond_frac @ alpha   (alpha ∈ R^{5×2})
-      Z' = scale_0 * Z,  H' = scale_1 * H  (per graph, before K/V)
+    Bond-modulated pairwise logits (edge-level, not per-node):
+      logit_ij = (Q_i · K_j / sqrt(d)) * alpha_k   when bond type k exists between i,j
+      logit_ij = -inf                               when no bond (attention weight 0)
+
+    alpha_k is a learnable scalar per bond type (alpha ∈ R^5).
+    K/V are built from cat(Z', H') without bond scaling on features.
 
     Nodes from different graphs cannot attend to each other (padding mask).
     """
@@ -63,7 +98,7 @@ class GraphwiseCrossAttention(nn.Module):
         if mode == "cross":
             self.k_proj = nn.Linear(2 * model_dim, model_dim)
             self.v_proj = nn.Linear(2 * model_dim, model_dim)
-            self.alpha = nn.Parameter(torch.ones(num_bond_types, 2))
+            self.alpha = nn.Parameter(torch.ones(num_bond_types))
         else:
             self.k_proj = nn.Linear(model_dim, model_dim)
             self.v_proj = nn.Linear(model_dim, model_dim)
@@ -88,7 +123,8 @@ class GraphwiseCrossAttention(nn.Module):
         Z: torch.Tensor,
         H: torch.Tensor,
         batch: torch.Tensor,
-        bond_frac: torch.Tensor | None = None,
+        edge_index: torch.Tensor | None = None,
+        edge_attr: torch.Tensor | None = None,
     ) -> torch.Tensor:
         device = L.device
         batch_size = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
@@ -116,13 +152,7 @@ class GraphwiseCrossAttention(nn.Module):
 
         Q = self._split_heads(self.q_proj(L_pad))
         if self.mode == "cross":
-            z_feat = self.z_proj(Z_pad)
-            h_feat = self.h_proj(H_pad)
-            if bond_frac is not None and self.alpha is not None:
-                bond_scale = bond_frac @ self.alpha
-                z_feat = z_feat * bond_scale[:, 0:1].unsqueeze(1)
-                h_feat = h_feat * bond_scale[:, 1:2].unsqueeze(1)
-            kv_src = torch.cat([z_feat, h_feat], dim=-1)
+            kv_src = torch.cat([self.z_proj(Z_pad), self.h_proj(H_pad)], dim=-1)
             K = self._split_heads(self.k_proj(kv_src))
             V = self._split_heads(self.v_proj(kv_src))
         else:
@@ -130,10 +160,24 @@ class GraphwiseCrossAttention(nn.Module):
             V = self._split_heads(self.v_proj(L_pad))
 
         attn_logits = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
-        key_mask = mask.unsqueeze(1).unsqueeze(2)  # [B,1,1,N]
-        query_mask = mask.unsqueeze(1).unsqueeze(3)  # [B,1,N,1]
-        attn_logits = attn_logits.masked_fill(~key_mask, -1e9)
-        attn_logits = attn_logits.masked_fill(~query_mask, 0.0)
+
+        pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1)  # [B, N, N]
+        if edge_index is not None and edge_attr is not None and self.alpha is not None:
+            bond_scale = build_bond_pair_scale(
+                edge_index,
+                edge_attr,
+                batch,
+                batch_size,
+                max_nodes,
+                self.alpha,
+                self.num_bond_types,
+            )
+            attn_logits = attn_logits * bond_scale.unsqueeze(1)
+            bonded = pair_mask & (bond_scale > 0)
+            attn_logits = attn_logits.masked_fill(~bonded.unsqueeze(1), -1e9)
+        else:
+            attn_logits = attn_logits.masked_fill(~pair_mask.unsqueeze(1), -1e9)
+
         attn = torch.softmax(attn_logits, dim=-1)
         attn = torch.nan_to_num(attn, nan=0.0)
         attn = self.dropout(attn)
@@ -156,6 +200,7 @@ def graphwise_cross_attention(
     H: torch.Tensor,
     batch: torch.Tensor,
     module: GraphwiseCrossAttention,
-    bond_frac: torch.Tensor | None = None,
+    edge_index: torch.Tensor | None = None,
+    edge_attr: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return module(L, Z, H, batch, bond_frac)
+    return module(L, Z, H, batch, edge_index, edge_attr)

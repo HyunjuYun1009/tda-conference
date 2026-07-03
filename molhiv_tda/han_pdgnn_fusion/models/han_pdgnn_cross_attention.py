@@ -9,7 +9,7 @@ from torch_geometric.data import Batch, Data
 from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 
 from hetero_transform import homo_to_hetero
-from models.cross_attention_fusion import FusionMLP, GraphwiseCrossAttention, compute_bond_fractions
+from models.cross_attention_fusion import FusionMLP, GraphwiseCrossAttention
 from models.han_encoder import HANEncoder, batch_hetero_from_data_list
 from models.pdgnn_filtration_encoder import PDGNNFiltrationEncoder
 
@@ -89,8 +89,9 @@ class HANPDGNNCrossAttentionModel(nn.Module):
         L = self.fusion(Z, H)
 
         if self.use_cross_attention:
-            bond_frac = compute_bond_fractions(data)
-            R = self.cross_attn(L, Z, H, data.batch, bond_frac)
+            R = self.cross_attn(
+                L, Z, H, data.batch, data.edge_index, data.edge_attr
+            )
         else:
             R = L
 
