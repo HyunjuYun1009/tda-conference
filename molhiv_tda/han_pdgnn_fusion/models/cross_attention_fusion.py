@@ -6,6 +6,18 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+def compute_bond_fractions(batch, num_bond_types: int = 5) -> torch.Tensor:
+    """Graph-level bond-type fractions [num_graphs, num_bond_types]."""
+    device = batch.edge_attr.device
+    bond_type = batch.edge_attr[:, 0].long().clamp(0, num_bond_types - 1)
+    src_graph = batch.batch[batch.edge_index[0]]
+    num_graphs = int(batch.num_graphs)
+
+    counts = torch.zeros(num_graphs, num_bond_types, device=device)
+    counts.index_add_(0, src_graph, F.one_hot(bond_type, num_bond_types).float())
+    return counts / counts.sum(dim=-1, keepdim=True).clamp_min(1.0)
+
+
 class FusionMLP(nn.Module):
     def __init__(self, in_dim: int, model_dim: int, dropout: float = 0.2):
         super().__init__()
@@ -24,6 +36,10 @@ class GraphwiseCrossAttention(nn.Module):
     """
     Cross-attention where fused L attends to HAN (Z) and PDGNN (H) streams.
 
+    Bond-composition-modulated scaling (no additive bias):
+      scale = bond_frac @ alpha   (alpha ∈ R^{5×2})
+      Z' = scale_0 * Z,  H' = scale_1 * H  (per graph, before K/V)
+
     Nodes from different graphs cannot attend to each other (padding mask).
     """
 
@@ -33,11 +49,13 @@ class GraphwiseCrossAttention(nn.Module):
         num_heads: int = 4,
         dropout: float = 0.2,
         mode: str = "cross",
+        num_bond_types: int = 5,
     ):
         super().__init__()
         self.model_dim = model_dim
         self.num_heads = num_heads
         self.mode = mode
+        self.num_bond_types = num_bond_types
         self.head_dim = model_dim // num_heads
         assert self.head_dim * num_heads == model_dim
 
@@ -45,9 +63,11 @@ class GraphwiseCrossAttention(nn.Module):
         if mode == "cross":
             self.k_proj = nn.Linear(2 * model_dim, model_dim)
             self.v_proj = nn.Linear(2 * model_dim, model_dim)
+            self.alpha = nn.Parameter(torch.ones(num_bond_types, 2))
         else:
             self.k_proj = nn.Linear(model_dim, model_dim)
             self.v_proj = nn.Linear(model_dim, model_dim)
+            self.alpha = None
 
         self.z_proj = nn.Linear(model_dim, model_dim)
         self.h_proj = nn.Linear(model_dim, model_dim)
@@ -68,6 +88,7 @@ class GraphwiseCrossAttention(nn.Module):
         Z: torch.Tensor,
         H: torch.Tensor,
         batch: torch.Tensor,
+        bond_frac: torch.Tensor | None = None,
     ) -> torch.Tensor:
         device = L.device
         batch_size = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
@@ -95,7 +116,13 @@ class GraphwiseCrossAttention(nn.Module):
 
         Q = self._split_heads(self.q_proj(L_pad))
         if self.mode == "cross":
-            kv_src = torch.cat([self.z_proj(Z_pad), self.h_proj(H_pad)], dim=-1)
+            z_feat = self.z_proj(Z_pad)
+            h_feat = self.h_proj(H_pad)
+            if bond_frac is not None and self.alpha is not None:
+                bond_scale = bond_frac @ self.alpha
+                z_feat = z_feat * bond_scale[:, 0:1].unsqueeze(1)
+                h_feat = h_feat * bond_scale[:, 1:2].unsqueeze(1)
+            kv_src = torch.cat([z_feat, h_feat], dim=-1)
             K = self._split_heads(self.k_proj(kv_src))
             V = self._split_heads(self.v_proj(kv_src))
         else:
@@ -129,5 +156,6 @@ def graphwise_cross_attention(
     H: torch.Tensor,
     batch: torch.Tensor,
     module: GraphwiseCrossAttention,
+    bond_frac: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return module(L, Z, H, batch)
+    return module(L, Z, H, batch, bond_frac)
