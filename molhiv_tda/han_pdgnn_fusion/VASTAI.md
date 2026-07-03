@@ -86,9 +86,18 @@ nohup python train_han_pdgnn.py --model main --epochs 100 --device cuda > train.
 | Issue | Fix |
 |-------|-----|
 | `Dataset not found` | `python download_molhiv.py` |
-| CUDA mismatch | `CUDA_TAG=cu124 bash setup_vastai.sh` |
+| `hiv.csv` not found | `python download_molhiv.py` (auto-fetches SMILES mapping) |
+| `pyg-lib` / `libpyg.so` error | `CUDA_TAG=cu124 bash setup_vastai.sh` (pins torch 2.6 + cu124) |
+| `constraints ... has no attribute get` | `git pull` (tune_search.yaml + tune_han_pdgnn.py fix) |
+| Log file empty with `nohup` | Use `python -u` and `tail -f logfile` |
 | OOM | `--batch-size 16` or smaller model in `config.yaml` |
 | Slow first epoch | Normal (HAN runs per-molecule); wait 5–15 min for `Epoch 001` |
+
+Verify environment after setup:
+
+```bash
+python verify_env.py
+```
 
 ## Cost estimate
 

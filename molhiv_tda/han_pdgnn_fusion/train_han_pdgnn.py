@@ -102,7 +102,8 @@ def run_training(
         valid_auc = evaluate(model, loaders["valid"], evaluator, device)
         test_auc = evaluate(model, loaders["test"], evaluator, device)
         print(
-            f"Epoch {epoch:03d} | loss={loss:.4f} | valid={valid_auc:.4f} | test={test_auc:.4f}"
+            f"Epoch {epoch:03d} | loss={loss:.4f} | valid={valid_auc:.4f} | test={test_auc:.4f}",
+            flush=True,
         )
 
         if valid_auc > best_valid:

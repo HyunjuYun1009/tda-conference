@@ -65,6 +65,9 @@ def get_dataset(
 
         download_molhiv(root)
     prepare_dataset(root)
+    from download_molhiv import ensure_smiles_mapping
+
+    ensure_smiles_mapping(root)
     dataset, split_idx, evaluator, smiles = load_molhiv(root)
     return dataset, split_idx, evaluator, smiles
 
