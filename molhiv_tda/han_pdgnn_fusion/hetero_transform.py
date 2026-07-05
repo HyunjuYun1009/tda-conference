@@ -7,8 +7,24 @@ import torch
 from ogb.utils.features import allowable_features
 from torch_geometric.data import Data, HeteroData
 
-ATOMIC_NUM_LIST: List[int] = [int(z) for z in allowable_features["possible_atomic_num_list"]]
+_RAW_ATOMIC_ENTRIES = list(allowable_features["possible_atomic_num_list"])
 BOND_TYPE_LIST: List[str] = list(allowable_features["possible_bond_type_list"])
+
+
+def _atomic_z_from_feature_index(idx: int) -> int:
+    """Map OGB atom feature column-0 index to atomic number Z."""
+    if idx < 0 or idx >= len(_RAW_ATOMIC_ENTRIES):
+        raise ValueError(f"Invalid atomic number index {idx}")
+    val = _RAW_ATOMIC_ENTRIES[idx]
+    if isinstance(val, str):
+        if val.isdigit():
+            return int(val)
+        # OGB uses 'misc' for out-of-vocabulary atoms.
+        return 6
+    return int(val)
+
+
+ATOMIC_NUM_LIST: List[int] = [_atomic_z_from_feature_index(i) for i in range(len(_RAW_ATOMIC_ENTRIES))]
 
 # Index → atomic number lookup (CPU); safe for DataLoader workers.
 _ATOMIC_IDX_TO_Z = torch.tensor(ATOMIC_NUM_LIST, dtype=torch.long)
@@ -31,9 +47,7 @@ ATOMIC_MASS_LOOKUP: Dict[int, int] = {
 def decode_atomic_number(atom_feature_row: torch.Tensor) -> int:
     """Decode OGB categorical atom feature column 0 to atomic number Z."""
     idx = int(atom_feature_row[0].item())
-    if idx < 0 or idx >= len(ATOMIC_NUM_LIST):
-        raise ValueError(f"Invalid atomic number index {idx}")
-    return int(ATOMIC_NUM_LIST[idx])
+    return _atomic_z_from_feature_index(idx)
 
 
 def atomic_number_to_mass_number(z: int) -> int:
