@@ -7,8 +7,11 @@ import torch
 from ogb.utils.features import allowable_features
 from torch_geometric.data import Data, HeteroData
 
-ATOMIC_NUM_LIST: List[int] = list(allowable_features["possible_atomic_num_list"])
+ATOMIC_NUM_LIST: List[int] = [int(z) for z in allowable_features["possible_atomic_num_list"]]
 BOND_TYPE_LIST: List[str] = list(allowable_features["possible_bond_type_list"])
+
+# Index → atomic number lookup (CPU); safe for DataLoader workers.
+_ATOMIC_IDX_TO_Z = torch.tensor(ATOMIC_NUM_LIST, dtype=torch.long)
 
 # Approximate mass number lookup (integer amu) for optional node typing.
 ATOMIC_MASS_LOOKUP: Dict[int, int] = {
@@ -58,19 +61,9 @@ def bond_to_edge_type(edge_attr_row: torch.Tensor) -> str:
     return f"bond_{name}"
 
 
-_ATOMIC_NUM_TENSOR: torch.Tensor | None = None
-
-
-def _atomic_num_tensor(device: torch.device) -> torch.Tensor:
-    global _ATOMIC_NUM_TENSOR
-    if _ATOMIC_NUM_TENSOR is None or _ATOMIC_NUM_TENSOR.device != device:
-        _ATOMIC_NUM_TENSOR = torch.tensor(ATOMIC_NUM_LIST, dtype=torch.long, device=device)
-    return _ATOMIC_NUM_TENSOR
-
-
 def compute_atomic_numbers(data: Data) -> torch.Tensor:
     idx = data.x[:, 0].long().clamp(0, len(ATOMIC_NUM_LIST) - 1)
-    return _atomic_num_tensor(data.x.device)[idx]
+    return _ATOMIC_IDX_TO_Z[idx]
 
 
 def homo_to_hetero(
