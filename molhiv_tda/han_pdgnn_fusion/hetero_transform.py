@@ -77,7 +77,7 @@ def bond_to_edge_type(edge_attr_row: torch.Tensor) -> str:
 
 def compute_atomic_numbers(data: Data) -> torch.Tensor:
     idx = data.x[:, 0].long().clamp(0, len(ATOMIC_NUM_LIST) - 1)
-    return _ATOMIC_IDX_TO_Z[idx]
+    return _ATOMIC_IDX_TO_Z.to(idx.device)[idx]
 
 
 def homo_to_hetero(
