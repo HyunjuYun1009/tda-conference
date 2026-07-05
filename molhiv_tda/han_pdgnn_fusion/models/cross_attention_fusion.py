@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import torch
 import torch.nn as nn
+from torch_geometric.utils import to_dense_batch
 
 
 def build_bond_pair_scale(
@@ -12,6 +13,7 @@ def build_bond_pair_scale(
     batch_size: int,
     max_nodes: int,
     alpha: torch.Tensor,
+    ptr: torch.Tensor | None = None,
     num_bond_types: int = 5,
 ) -> torch.Tensor:
     """
@@ -20,33 +22,30 @@ def build_bond_pair_scale(
     Returns:
         scale [batch_size, max_nodes, max_nodes] where
         scale[g, i, j] = alpha[bond_type] if nodes i,j share a bond in graph g, else 0.
-        Undirected: both (i, j) and (j, i) are set.
     """
     device = edge_attr.device
     num_nodes = batch.size(0)
     bond_type = edge_attr[:, 0].long().clamp(0, num_bond_types - 1)
     src, dst = edge_index
 
+    if ptr is None:
+        counts = torch.bincount(batch, minlength=batch_size)
+        ptr = torch.zeros(batch_size + 1, dtype=torch.long, device=device)
+        ptr[1:] = counts.cumsum(0)
+
+    local = torch.arange(num_nodes, device=device) - ptr[batch]
     scale = torch.zeros(batch_size, max_nodes, max_nodes, device=device)
-    global_to_local = torch.full((num_nodes,), -1, dtype=torch.long, device=device)
 
-    for g in range(batch_size):
-        node_idx = (batch == g).nonzero(as_tuple=True)[0]
-        n = node_idx.size(0)
-        if n == 0:
-            continue
-        global_to_local[node_idx] = torch.arange(n, device=device)
+    edge_mask = batch[src] == batch[dst]
+    if not edge_mask.any():
+        return scale
 
-        edge_mask = (batch[src] == g) & (batch[dst] == g)
-        if not edge_mask.any():
-            continue
-        es, ed = src[edge_mask], dst[edge_mask]
-        bt = bond_type[edge_mask]
-        ls, ld = global_to_local[es], global_to_local[ed]
-        w = alpha[bt]
-        scale[g, ls, ld] = w
-        scale[g, ld, ls] = w
-
+    es, ed = src[edge_mask], dst[edge_mask]
+    g = batch[es]
+    ls, ld = local[es], local[ed]
+    w = alpha[bond_type[edge_mask]]
+    scale[g, ls, ld] = w
+    scale[g, ld, ls] = w
     return scale
 
 
@@ -68,14 +67,9 @@ class GraphwiseCrossAttention(nn.Module):
     """
     Cross-attention where fused L attends to HAN (Z) and PDGNN (H) streams.
 
-    Bond-modulated pairwise logits (edge-level, not per-node):
+    Bond-modulated pairwise logits (edge-level):
       logit_ij = (Q_i · K_j / sqrt(d)) * alpha_k   when bond type k exists between i,j
       logit_ij = -inf                               when no bond (attention weight 0)
-
-    alpha_k is a learnable scalar per bond type (alpha ∈ R^5).
-    K/V are built from cat(Z', H') without bond scaling on features.
-
-    Nodes from different graphs cannot attend to each other (padding mask).
     """
 
     def __init__(
@@ -125,31 +119,19 @@ class GraphwiseCrossAttention(nn.Module):
         batch: torch.Tensor,
         edge_index: torch.Tensor | None = None,
         edge_attr: torch.Tensor | None = None,
+        ptr: torch.Tensor | None = None,
     ) -> torch.Tensor:
-        device = L.device
-        batch_size = int(batch.max().item()) + 1 if batch.numel() > 0 else 1
+        if batch.numel() == 0:
+            return L
 
-        max_nodes = 0
-        for g in range(batch_size):
-            max_nodes = max(max_nodes, int((batch == g).sum().item()))
+        L_pad, mask = to_dense_batch(L, batch)
+        Z_pad, _ = to_dense_batch(Z, batch)
+        H_pad, _ = to_dense_batch(H, batch)
+        batch_size, max_nodes, _ = L_pad.shape
         if max_nodes == 0:
             return L
 
-        L_pad = torch.zeros(batch_size, max_nodes, self.model_dim, device=device)
-        Z_pad = torch.zeros(batch_size, max_nodes, self.model_dim, device=device)
-        H_pad = torch.zeros(batch_size, max_nodes, self.model_dim, device=device)
-        mask = torch.zeros(batch_size, max_nodes, dtype=torch.bool, device=device)
-
-        for g in range(batch_size):
-            idx = (batch == g).nonzero(as_tuple=True)[0]
-            n = idx.size(0)
-            if n == 0:
-                continue
-            L_pad[g, :n] = L[idx]
-            Z_pad[g, :n] = Z[idx]
-            H_pad[g, :n] = H[idx]
-            mask[g, :n] = True
-
+        device = L.device
         Q = self._split_heads(self.q_proj(L_pad))
         if self.mode == "cross":
             kv_src = torch.cat([self.z_proj(Z_pad), self.h_proj(H_pad)], dim=-1)
@@ -161,7 +143,7 @@ class GraphwiseCrossAttention(nn.Module):
 
         attn_logits = torch.matmul(Q, K.transpose(-2, -1)) / (self.head_dim ** 0.5)
 
-        pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1)  # [B, N, N]
+        pair_mask = mask.unsqueeze(2) & mask.unsqueeze(1)
         if edge_index is not None and edge_attr is not None and self.alpha is not None:
             bond_scale = build_bond_pair_scale(
                 edge_index,
@@ -170,7 +152,8 @@ class GraphwiseCrossAttention(nn.Module):
                 batch_size,
                 max_nodes,
                 self.alpha,
-                self.num_bond_types,
+                ptr=ptr,
+                num_bond_types=self.num_bond_types,
             )
             attn_logits = attn_logits * bond_scale.unsqueeze(1)
             bonded = pair_mask & (bond_scale > 0)
@@ -184,14 +167,12 @@ class GraphwiseCrossAttention(nn.Module):
         context = self._merge_heads(torch.matmul(attn, V))
         out_pad = self.out_proj(context)
 
-        out = torch.zeros_like(L)
-        for g in range(batch_size):
-            idx = (batch == g).nonzero(as_tuple=True)[0]
-            n = idx.size(0)
-            if n == 0:
-                continue
-            out[idx] = out_pad[g, :n] + L[idx]
-        return out
+        if ptr is None:
+            counts = torch.bincount(batch, minlength=batch_size)
+            ptr = torch.zeros(batch_size + 1, dtype=torch.long, device=device)
+            ptr[1:] = counts.cumsum(0)
+        local = torch.arange(batch.size(0), device=device) - ptr[batch]
+        return out_pad[batch, local] + L
 
 
 def graphwise_cross_attention(
@@ -202,5 +183,6 @@ def graphwise_cross_attention(
     module: GraphwiseCrossAttention,
     edge_index: torch.Tensor | None = None,
     edge_attr: torch.Tensor | None = None,
+    ptr: torch.Tensor | None = None,
 ) -> torch.Tensor:
-    return module(L, Z, H, batch, edge_index, edge_attr)
+    return module(L, Z, H, batch, edge_index, edge_attr, ptr=ptr)

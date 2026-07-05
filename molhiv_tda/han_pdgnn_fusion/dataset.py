@@ -27,7 +27,7 @@ class MolHIVFusionDataset(Dataset):
         base_dataset,
         indices: Sequence[int],
         node_type_mode: str = "atomic_number",
-        build_hetero: bool = False,
+        build_hetero: bool = True,
     ):
         self.base_dataset = base_dataset
         self.indices = list(map(int, indices))
@@ -48,9 +48,12 @@ class MolHIVFusionDataset(Dataset):
         return data
 
 
-def collate_mol_batch(items: list[Data]) -> Data:
-    """Batch homogeneous graphs; hetero built in model forward for flexibility."""
-    return Batch.from_data_list(items)
+def collate_mol_batch(items: list[Data]) -> Batch:
+    """Batch homogeneous graphs; optionally attach pre-built hetero graphs for HAN."""
+    batch = Batch.from_data_list(items)
+    if items and hasattr(items[0], "hetero_data"):
+        batch.hetero_list = [item.hetero_data for item in items]
+    return batch
 
 
 def get_dataset(
@@ -79,6 +82,7 @@ def make_dataloaders(
     num_workers: int = 0,
     node_type_mode: str = "atomic_number",
     max_samples: Optional[int] = None,
+    build_hetero: bool = True,
 ) -> Dict[str, DataLoader]:
     loaders = {}
     for split in ("train", "valid", "test"):
@@ -89,14 +93,16 @@ def make_dataloaders(
             dataset,
             indices,
             node_type_mode=node_type_mode,
-            build_hetero=False,
+            build_hetero=build_hetero,
         )
-        loaders[split] = DataLoader(
-            subset,
-            batch_size=batch_size,
-            shuffle=(split == "train"),
-            num_workers=num_workers,
-            collate_fn=collate_mol_batch,
-            pin_memory=torch.cuda.is_available(),
-        )
+        loader_kwargs: dict = {
+            "batch_size": batch_size,
+            "shuffle": (split == "train"),
+            "num_workers": num_workers,
+            "collate_fn": collate_mol_batch,
+            "pin_memory": torch.cuda.is_available(),
+        }
+        if num_workers > 0:
+            loader_kwargs["persistent_workers"] = True
+        loaders[split] = DataLoader(subset, **loader_kwargs)
     return loaders

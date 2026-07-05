@@ -8,9 +8,9 @@ import torch.nn as nn
 from torch_geometric.data import Batch, Data
 from torch_geometric.nn import global_add_pool, global_max_pool, global_mean_pool
 
-from hetero_transform import homo_to_hetero
+from hetero_transform import homo_to_hetero, scatter_batched_hetero_to_homo
 from models.cross_attention_fusion import FusionMLP, GraphwiseCrossAttention
-from models.han_encoder import HANEncoder, batch_hetero_from_data_list
+from models.han_encoder import HANEncoder
 from models.pdgnn_filtration_encoder import PDGNNFiltrationEncoder
 
 
@@ -75,13 +75,24 @@ class HANPDGNNCrossAttentionModel(nn.Module):
         )
 
     def encode_han(self, data: Batch) -> torch.Tensor:
-        z_parts = []
-        for i in range(data.num_graphs):
-            sub = _extract_molecular_subgraph(data, i)
-            hetero, _ = homo_to_hetero(sub, node_type_mode=self.node_type_mode)
-            hetero = hetero.to(data.x.device)
-            z_parts.append(self.han_encoder(hetero, sub.num_nodes))
-        return torch.cat(z_parts, dim=0)
+        device = data.x.device
+        hetero_list = getattr(data, "hetero_list", None)
+        if hetero_list is not None and len(hetero_list) == data.num_graphs:
+            hetero_batch = Batch.from_data_list([h.to(device) for h in hetero_list])
+        else:
+            hetero_batch = Batch.from_data_list(
+                [
+                    homo_to_hetero(
+                        _extract_molecular_subgraph(data, i),
+                        node_type_mode=self.node_type_mode,
+                    )[0].to(device)
+                    for i in range(data.num_graphs)
+                ]
+            )
+        typed = self.han_encoder.encode_hetero(hetero_batch)
+        return scatter_batched_hetero_to_homo(
+            typed, hetero_batch, data.ptr, data.num_nodes, device
+        )
 
     def forward(self, data: Batch) -> torch.Tensor:
         Z = self.encode_han(data)
@@ -90,7 +101,13 @@ class HANPDGNNCrossAttentionModel(nn.Module):
 
         if self.use_cross_attention:
             R = self.cross_attn(
-                L, Z, H, data.batch, data.edge_index, data.edge_attr
+                L,
+                Z,
+                H,
+                data.batch,
+                data.edge_index,
+                data.edge_attr,
+                ptr=data.ptr,
             )
         else:
             R = L

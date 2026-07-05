@@ -58,12 +58,19 @@ def bond_to_edge_type(edge_attr_row: torch.Tensor) -> str:
     return f"bond_{name}"
 
 
+_ATOMIC_NUM_TENSOR: torch.Tensor | None = None
+
+
+def _atomic_num_tensor(device: torch.device) -> torch.Tensor:
+    global _ATOMIC_NUM_TENSOR
+    if _ATOMIC_NUM_TENSOR is None or _ATOMIC_NUM_TENSOR.device != device:
+        _ATOMIC_NUM_TENSOR = torch.tensor(ATOMIC_NUM_LIST, dtype=torch.long, device=device)
+    return _ATOMIC_NUM_TENSOR
+
+
 def compute_atomic_numbers(data: Data) -> torch.Tensor:
-    return torch.tensor(
-        [decode_atomic_number(data.x[i]) for i in range(data.num_nodes)],
-        dtype=torch.long,
-        device=data.x.device,
-    )
+    idx = data.x[:, 0].long().clamp(0, len(ATOMIC_NUM_LIST) - 1)
+    return _atomic_num_tensor(data.x.device)[idx]
 
 
 def homo_to_hetero(
@@ -143,5 +150,27 @@ def hetero_node_embeddings_to_homo(
         if not hasattr(hetero[ntype], "global_index"):
             continue
         global_idx = hetero[ntype].global_index.to(device)
+        out[global_idx] = emb
+    return out
+
+
+def scatter_batched_hetero_to_homo(
+    typed_embeddings: Dict[str, torch.Tensor],
+    batch_hetero: HeteroData,
+    ptr: torch.Tensor,
+    num_nodes: int,
+    device: torch.device,
+) -> torch.Tensor:
+    """Map batched HeteroData node embeddings back to PyG Batch node order."""
+    hidden_dim = next(iter(typed_embeddings.values())).size(-1)
+    out = torch.zeros(num_nodes, hidden_dim, device=device)
+    ptr = ptr.to(device)
+    for ntype, emb in typed_embeddings.items():
+        store = batch_hetero[ntype]
+        if not hasattr(store, "global_index"):
+            continue
+        g_ids = store.batch.to(device)
+        local_idx = store.global_index.to(device)
+        global_idx = ptr[g_ids] + local_idx
         out[global_idx] = emb
     return out
