@@ -84,6 +84,8 @@ def make_dataloaders(
     max_samples: Optional[int] = None,
     build_hetero: bool = True,
 ) -> Dict[str, DataLoader]:
+    # HeteroData preload only in the main process; worker pickling exhausts FDs on Elice.
+    preload_hetero = build_hetero and num_workers == 0
     loaders = {}
     for split in ("train", "valid", "test"):
         indices = split_idx[split].tolist()
@@ -93,16 +95,14 @@ def make_dataloaders(
             dataset,
             indices,
             node_type_mode=node_type_mode,
-            build_hetero=build_hetero,
+            build_hetero=preload_hetero,
         )
-        loader_kwargs: dict = {
-            "batch_size": batch_size,
-            "shuffle": (split == "train"),
-            "num_workers": num_workers,
-            "collate_fn": collate_mol_batch,
-            "pin_memory": torch.cuda.is_available(),
-        }
-        if num_workers > 0:
-            loader_kwargs["persistent_workers"] = True
-        loaders[split] = DataLoader(subset, **loader_kwargs)
+        loaders[split] = DataLoader(
+            subset,
+            batch_size=batch_size,
+            shuffle=(split == "train"),
+            num_workers=num_workers,
+            collate_fn=collate_mol_batch,
+            pin_memory=torch.cuda.is_available() and num_workers == 0,
+        )
     return loaders

@@ -73,7 +73,7 @@ def run_training(
         dataset,
         split_idx,
         batch_size=cfg["batch_size"],
-        num_workers=cfg.get("num_workers", 4),
+        num_workers=cfg.get("num_workers", 0),
         node_type_mode=cfg["node_type_mode"],
         max_samples=max_samples,
         build_hetero=cfg.get("preload_hetero", True),
