@@ -44,7 +44,7 @@ def save_checkpoint(path: Path, model, optimizer, epoch: int, metrics: Dict[str,
 
 def load_checkpoint(path: Path, model, optimizer=None) -> Dict[str, Any]:
     ckpt = torch.load(path, map_location="cpu", weights_only=False)
-    model.load_state_dict(ckpt["model_state"])
+    model.load_state_dict(ckpt["model_state"], strict=False)
     if optimizer is not None and "optimizer_state" in ckpt:
         optimizer.load_state_dict(ckpt["optimizer_state"])
     return ckpt

@@ -121,7 +121,9 @@ def run_training(
                 break
 
     if best_state is not None:
-        model.load_state_dict(best_state)
+        # HAN relation convs are created lazily per edge type; later batches may add
+        # keys not present in the best-epoch snapshot.
+        model.load_state_dict(best_state, strict=False)
 
     result = {
         "model": f"han_pdgnn_{model_name}",
