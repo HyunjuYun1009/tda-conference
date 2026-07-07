@@ -41,13 +41,18 @@ def evaluate_model(
     balance_seed: int = 0,
 ) -> Dict[str, float]:
     model.eval()
+    # Move feature banks to device once (no-op if already there); avoids
+    # copying the full bank to GPU on every batch.
+    bond_tda = bond_tda.to(device) if bond_tda is not None else None
+    mw = mw.to(device) if mw is not None else None
+    tda_3d = tda_3d.to(device) if tda_3d is not None else None
     y_true = []
     y_pred = []
 
     for batch in loader:
         batch = batch.to(device)
         pred = _forward_model(
-            model, batch, bond_tda, mw, tda_3d, edge_dist_bank, device
+            model, batch, bond_tda, mw, tda_3d, edge_dist_bank
         )
 
         y_true.append(batch.y.view(batch.y.size(0), -1).detach().cpu())
@@ -89,19 +94,19 @@ def _forward_model(
     mw,
     tda_3d,
     edge_dist_bank,
-    device,
 ):
+    """Feature banks are expected to already live on the batch's device."""
     if edge_dist_bank is not None:
-        mw_b = gather_graph_features(batch, mw.to(device))
+        mw_b = gather_graph_features(batch, mw)
         return model(batch, edge_dist_bank, mw_b)
 
     kwargs = {}
     if bond_tda is not None:
-        kwargs["bond_tda"] = gather_graph_features(batch, bond_tda.to(device))
+        kwargs["bond_tda"] = gather_graph_features(batch, bond_tda)
     if mw is not None:
-        kwargs["mw"] = gather_graph_features(batch, mw.to(device))
+        kwargs["mw"] = gather_graph_features(batch, mw)
     if tda_3d is not None:
-        kwargs["tda_3d"] = gather_graph_features(batch, tda_3d.to(device))
+        kwargs["tda_3d"] = gather_graph_features(batch, tda_3d)
     if kwargs:
         return model(batch, **kwargs)
     return model(batch)
@@ -118,6 +123,10 @@ def train_one_epoch(
     edge_dist_bank: Optional[list[torch.Tensor]] = None,
 ) -> float:
     model.train()
+    # Move feature banks to device once (no-op if already there).
+    bond_tda = bond_tda.to(device) if bond_tda is not None else None
+    mw = mw.to(device) if mw is not None else None
+    tda_3d = tda_3d.to(device) if tda_3d is not None else None
     total_loss = 0.0
     total_graphs = 0
 
@@ -126,7 +135,7 @@ def train_one_epoch(
         optimizer.zero_grad()
 
         pred = _forward_model(
-            model, batch, bond_tda, mw, tda_3d, edge_dist_bank, device
+            model, batch, bond_tda, mw, tda_3d, edge_dist_bank
         )
 
         is_labeled = batch.y == batch.y
@@ -160,12 +169,16 @@ def run_training(
     test_balance_seed: int = 0,
 ) -> Dict[str, float]:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Hoist feature banks onto the device once so per-epoch calls never re-copy.
+    bond_tda = bond_tda.to(device) if bond_tda is not None else None
+    mw = mw.to(device) if mw is not None else None
+    tda_3d = tda_3d.to(device) if tda_3d is not None else None
     best_valid = -1.0
     best_test = -1.0
     best_state = None
     stale = 0
 
-    for _ in range(epochs):
+    for epoch in range(epochs):
         train_one_epoch(
             model,
             loaders["train"],
@@ -186,20 +199,21 @@ def run_training(
             tda_3d=tda_3d,
             edge_dist_bank=edge_dist_bank,
         )["rocauc"]
-        test_score = evaluate_model(
-            model,
-            loaders["test"],
-            evaluator,
-            device,
-            bond_tda=bond_tda,
-            mw=mw,
-            tda_3d=tda_3d,
-            edge_dist_bank=edge_dist_bank,
-            balance_binary=balance_test,
-            balance_seed=test_balance_seed + _,
-        )["rocauc"]
 
         if valid_score > best_valid:
+            # Only pay for a test-set pass when validation actually improves.
+            test_score = evaluate_model(
+                model,
+                loaders["test"],
+                evaluator,
+                device,
+                bond_tda=bond_tda,
+                mw=mw,
+                tda_3d=tda_3d,
+                edge_dist_bank=edge_dist_bank,
+                balance_binary=balance_test,
+                balance_seed=test_balance_seed + epoch,
+            )["rocauc"]
             best_valid = valid_score
             best_test = test_score
             best_state = {k: v.detach().cpu().clone() for k, v in model.state_dict().items()}
