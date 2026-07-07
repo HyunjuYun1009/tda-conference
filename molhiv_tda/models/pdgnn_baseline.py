@@ -24,15 +24,20 @@ class PDGNNBaseline(torch.nn.Module):
         num_layers: int = 5,
         emb_dim: int = 300,
         dropout: float = 0.5,
+        edge_phys_dim: int = 0,
     ):
         super().__init__()
         self.num_layers = num_layers
         self.dropout = dropout
         self.emb_dim = emb_dim
+        self.edge_phys_dim = edge_phys_dim
         self.prelu = torch.nn.PReLU(num_parameters=1, init=0.1)
 
         self.atom_encoder = AtomEncoder(emb_dim)
         self.bond_encoder = BondEncoder(emb_dim)
+        self.edge_phys_proj = (
+            torch.nn.Linear(edge_phys_dim, emb_dim) if edge_phys_dim > 0 else None
+        )
 
         # PDGNN stack: each layer output is 2 * emb_dim due to sum+min aggregation
         self.convs = torch.nn.ModuleList()
@@ -54,6 +59,8 @@ class PDGNNBaseline(torch.nn.Module):
     def encode(self, batch) -> torch.Tensor:
         x = self.atom_encoder(batch.x)
         edge_emb = self.bond_encoder(batch.edge_attr)
+        if self.edge_phys_proj is not None and hasattr(batch, "edge_phys"):
+            edge_emb = edge_emb + self.edge_phys_proj(batch.edge_phys)
 
         for i, conv in enumerate(self.convs):
             x = F.dropout(x, p=self.dropout, training=self.training)

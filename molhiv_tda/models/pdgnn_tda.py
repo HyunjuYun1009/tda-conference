@@ -25,17 +25,21 @@ class PDGNNTDA(torch.nn.Module):
         use_mw: bool = False,
         use_tda_3d: bool = False,
         tda_3d_dim: int = 75,
+        use_edge_electro: bool = False,
+        edge_phys_dim: int = 2,
     ):
         super().__init__()
         self.use_bond_tda = use_bond_tda
         self.use_mw = use_mw
         self.use_tda_3d = use_tda_3d
+        self.use_edge_electro = use_edge_electro
 
         self.backbone = PDGNNBaseline(
             num_tasks=0,
             num_layers=num_layers,
             emb_dim=emb_dim,
             dropout=dropout,
+            edge_phys_dim=edge_phys_dim if use_edge_electro else 0,
         )
 
         graph_dim = 2 * emb_dim

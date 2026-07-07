@@ -37,6 +37,8 @@ def evaluate_model(
     mw: Optional[torch.Tensor] = None,
     tda_3d: Optional[torch.Tensor] = None,
     edge_dist_bank: Optional[list[torch.Tensor]] = None,
+    balance_binary: bool = False,
+    balance_seed: int = 0,
 ) -> Dict[str, float]:
     model.eval()
     y_true = []
@@ -53,8 +55,31 @@ def evaluate_model(
 
     y_true = torch.cat(y_true, dim=0).numpy()
     y_pred = torch.cat(y_pred, dim=0).numpy()
+    if balance_binary:
+        y_true, y_pred = _balanced_binary_subset(y_true, y_pred, seed=balance_seed)
     input_dict = {"y_true": y_true, "y_pred": y_pred}
     return {"rocauc": evaluator.eval(input_dict)["rocauc"]}
+
+
+def _balanced_binary_subset(
+    y_true,
+    y_pred,
+    seed: int = 0,
+):
+    # OGB MolHIV labels are [N, 1] with {0,1}
+    labels = y_true.reshape(-1)
+    pos = [i for i, v in enumerate(labels) if v == 1]
+    neg = [i for i, v in enumerate(labels) if v == 0]
+    if not pos or not neg:
+        return y_true, y_pred
+    k = min(len(pos), len(neg))
+    g = torch.Generator()
+    g.manual_seed(seed)
+    pos_idx = torch.randperm(len(pos), generator=g)[:k].tolist()
+    neg_idx = torch.randperm(len(neg), generator=g)[:k].tolist()
+    keep = [pos[i] for i in pos_idx] + [neg[i] for i in neg_idx]
+    keep = torch.tensor(keep, dtype=torch.long)[torch.randperm(2 * k, generator=g)].tolist()
+    return y_true[keep], y_pred[keep]
 
 
 def _forward_model(
@@ -131,6 +156,8 @@ def run_training(
     mw: Optional[torch.Tensor] = None,
     tda_3d: Optional[torch.Tensor] = None,
     edge_dist_bank: Optional[list[torch.Tensor]] = None,
+    balance_test: bool = False,
+    test_balance_seed: int = 0,
 ) -> Dict[str, float]:
     optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
     best_valid = -1.0
@@ -168,6 +195,8 @@ def run_training(
             mw=mw,
             tda_3d=tda_3d,
             edge_dist_bank=edge_dist_bank,
+            balance_binary=balance_test,
+            balance_seed=test_balance_seed + _,
         )["rocauc"]
 
         if valid_score > best_valid:

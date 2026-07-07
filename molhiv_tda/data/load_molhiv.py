@@ -96,9 +96,15 @@ def load_molhiv(root: Path | str = DATASET_ROOT):
 class IndexedGraphDataset(torch.utils.data.Dataset):
     """Wrap OGB graphs with stable graph indices for feature lookup."""
 
-    def __init__(self, dataset: PygGraphPropPredDataset, indices: Sequence[int]):
+    def __init__(
+        self,
+        dataset: PygGraphPropPredDataset,
+        indices: Sequence[int],
+        edge_phys_bank: Optional[list[torch.Tensor]] = None,
+    ):
         self.dataset = dataset
         self.indices = list(map(int, indices))
+        self.edge_phys_bank = edge_phys_bank
 
     def __len__(self) -> int:
         return len(self.indices)
@@ -107,6 +113,8 @@ class IndexedGraphDataset(torch.utils.data.Dataset):
         graph_idx = self.indices[pos]
         data = self.dataset[graph_idx].clone()
         data.graph_idx = torch.tensor([graph_idx], dtype=torch.long)
+        if self.edge_phys_bank is not None:
+            data.edge_phys = self.edge_phys_bank[graph_idx].float()
         return data
 
 
@@ -116,6 +124,7 @@ def make_loaders(
     batch_size: int = 32,
     num_workers: int = 0,
     max_samples: int | None = None,
+    edge_phys_bank: Optional[list[torch.Tensor]] = None,
 ):
     """Create train/valid/test DataLoaders using official OGB split."""
     loaders = {}
@@ -123,7 +132,7 @@ def make_loaders(
         indices = split_idx[split].tolist()
         if max_samples is not None:
             indices = indices[:max_samples]
-        subset = IndexedGraphDataset(dataset, indices)
+        subset = IndexedGraphDataset(dataset, indices, edge_phys_bank=edge_phys_bank)
         loaders[split] = DataLoader(
             subset,
             batch_size=batch_size,

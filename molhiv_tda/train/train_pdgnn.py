@@ -17,6 +17,7 @@ from config import (
     DROPOUT,
     EMB_DIM,
     EPOCHS,
+    EDGE_ELECTRO_CACHE,
     NUM_BACKBONE_LAYERS,
     NUM_WORKERS,
     PATIENCE,
@@ -40,6 +41,11 @@ def main():
     parser.add_argument("--num-workers", type=int, default=NUM_WORKERS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-samples", type=int, default=None, help="Use subset for quick dev runs")
+    parser.add_argument(
+        "--use-electro-edge",
+        action="store_true",
+        help="Use cached edge physics [distance, coulomb] from RDKit.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -47,11 +53,20 @@ def main():
     print(f"Using device: {device_label(device)}")
 
     dataset, split_idx, evaluator, _ = load_molhiv(args.dataset_root)
+    edge_phys_bank = None
+    if args.use_electro_edge:
+        if not EDGE_ELECTRO_CACHE.exists():
+            raise FileNotFoundError(
+                f"Missing {EDGE_ELECTRO_CACHE}. Run scripts/preprocess_edge_electrostatic.py first."
+            )
+        obj = torch.load(EDGE_ELECTRO_CACHE, weights_only=False)
+        edge_phys_bank = obj["edge_phys"] if isinstance(obj, dict) else obj
     loaders = make_loaders(
         dataset, split_idx,
         batch_size=args.batch_size,
         max_samples=args.max_samples,
         num_workers=args.num_workers if device.type == "cuda" else 0,
+        edge_phys_bank=edge_phys_bank,
     )
 
     model = PDGNNBaseline(
@@ -59,6 +74,7 @@ def main():
         num_layers=NUM_BACKBONE_LAYERS,
         emb_dim=EMB_DIM,
         dropout=DROPOUT,
+        edge_phys_dim=2 if args.use_electro_edge else 0,
     ).to(device)
 
     metrics = run_training(
@@ -78,6 +94,7 @@ def main():
         "bond_type_tda": False,
         "molecular_weight": False,
         "tda_3d": False,
+        "electro_edge": args.use_electro_edge,
         **metrics,
     }
     out = RESULTS_ROOT / "pdgnn_baseline.json"

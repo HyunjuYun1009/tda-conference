@@ -7,6 +7,7 @@ import numpy as np
 import torch
 from rdkit import Chem
 from rdkit.Chem import AllChem
+from rdkit.Chem import rdPartialCharges
 
 from config import PI_RESOLUTION, PI_SIGMA, RIPS_MAX_DIM, RIPS_MAX_EDGE, TDA_3D_DIM
 
@@ -74,6 +75,57 @@ def compute_edge_distances_for_graph(
         return np.zeros(edge_index.size(1), dtype=np.float32), False
     ei = edge_index.cpu().numpy()
     return edge_distances_from_points(ei, points), True
+
+
+def compute_edge_electrostatic_for_graph(
+    smiles: str,
+    edge_index: torch.Tensor,
+    num_nodes: int,
+    eps: float = 1e-6,
+) -> tuple[np.ndarray, bool]:
+    """
+    Return per-edge [distance, coulomb_like] aligned with edge_index.
+
+    coulomb_like = (q_i * q_j) / (r_ij^2 + eps)
+    where q are Gasteiger partial charges from RDKit.
+    """
+    mol = Chem.MolFromSmiles(smiles)
+    if mol is None or mol.GetNumAtoms() != num_nodes:
+        return np.zeros((edge_index.size(1), 2), dtype=np.float32), False
+
+    status = AllChem.EmbedMolecule(mol, AllChem.ETKDGv3())
+    if status != 0:
+        return np.zeros((edge_index.size(1), 2), dtype=np.float32), False
+    try:
+        AllChem.MMFFOptimizeMolecule(mol)
+    except Exception:
+        pass
+
+    try:
+        rdPartialCharges.ComputeGasteigerCharges(mol)
+    except Exception:
+        return np.zeros((edge_index.size(1), 2), dtype=np.float32), False
+
+    conf = mol.GetConformer()
+    charges = np.zeros(num_nodes, dtype=np.float32)
+    for i, atom in enumerate(mol.GetAtoms()):
+        val = atom.GetProp("_GasteigerCharge") if atom.HasProp("_GasteigerCharge") else "0.0"
+        try:
+            charges[i] = float(val)
+        except Exception:
+            charges[i] = 0.0
+
+    ei = edge_index.cpu().numpy()
+    out = np.zeros((ei.shape[1], 2), dtype=np.float32)
+    for e in range(ei.shape[1]):
+        u, v = int(ei[0, e]), int(ei[1, e])
+        pu = conf.GetAtomPosition(u)
+        pv = conf.GetAtomPosition(v)
+        r = float(np.linalg.norm([pu.x - pv.x, pu.y - pv.y, pu.z - pv.z]))
+        coul = float((charges[u] * charges[v]) / (r * r + eps))
+        out[e, 0] = r
+        out[e, 1] = coul
+    return out, True
 
 
 def points_to_persistence_diagrams(
