@@ -80,6 +80,15 @@ def main():
     parser.add_argument("--num-workers", type=int, default=NUM_WORKERS)
     parser.add_argument("--seed", type=int, default=0)
     parser.add_argument("--max-samples", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=LR)
+    parser.add_argument("--dropout", type=float, default=DROPOUT)
+    parser.add_argument("--weight-decay", type=float, default=WEIGHT_DECAY)
+    parser.add_argument(
+        "--out",
+        type=str,
+        default=None,
+        help="Output JSON path (default: results/{config}.json). Use to avoid clobbering during sweeps.",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -127,14 +136,14 @@ def main():
             emb_dim=EMB_DIM,
             num_layers=NUM_BACKBONE_LAYERS,
             taus=DIST_FILTRATION_TAUS,
-            dropout=DROPOUT,
+            dropout=args.dropout,
         ).to(device)
     else:
         model = PDGNNTDA(
             num_tasks=dataset.num_tasks,
             num_layers=NUM_BACKBONE_LAYERS,
             emb_dim=EMB_DIM,
-            dropout=DROPOUT,
+            dropout=args.dropout,
             use_bond_tda=cfg.get("use_bond_tda", False),
             bond_tda_dim=BOND_TDA_DIM,
             use_mw=cfg.get("use_mw", False),
@@ -161,8 +170,8 @@ def main():
         device,
         epochs=args.epochs,
         patience=PATIENCE,
-        lr=LR,
-        weight_decay=WEIGHT_DECAY,
+        lr=args.lr,
+        weight_decay=args.weight_decay,
         bond_tda=bond_tda,
         mw=mw,
         tda_3d=tda_3d,
@@ -180,9 +189,16 @@ def main():
         "edge_dist_filtration": cfg.get("use_edge_dist", False),
         "electro_edge": cfg.get("use_edge_electro", False),
         "balanced_test_eval": cfg.get("balance_test", False),
+        "config": args.config,
+        "lr": args.lr,
+        "dropout": args.dropout,
+        "weight_decay": args.weight_decay,
+        "epochs": args.epochs,
+        "batch_size": args.batch_size,
+        "seed": args.seed,
         **metrics,
     }
-    out = RESULTS_ROOT / f"{args.config}.json"
+    out = Path(args.out) if args.out else RESULTS_ROOT / f"{args.config}.json"
     save_result(result, out)
     print(result)
     print(f"Saved to {out}")

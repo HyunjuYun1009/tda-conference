@@ -4,6 +4,11 @@ __pycache__/
 *.so
 *.egg-info/
 
+# Run logs
+*.log
+nohup.out
+**/nohup.out
+
 # Data, caches, checkpoints (download or regenerate on vast.ai)
 molhiv_tda/dataset/
 molhiv_tda/cache/
