@@ -89,6 +89,12 @@ def main():
         default=None,
         help="Output JSON path (default: results/{config}.json). Use to avoid clobbering during sweeps.",
     )
+    parser.add_argument(
+        "--save-ckpt",
+        type=str,
+        default=None,
+        help="If set, save the best model state_dict to this path (e.g. results/pdgnn_tda_3d_elec_best.pt).",
+    )
     args = parser.parse_args()
 
     torch.manual_seed(args.seed)
@@ -178,6 +184,7 @@ def main():
         edge_dist_bank=edge_dist_bank,
         balance_test=cfg.get("balance_test", False),
         test_balance_seed=args.seed,
+        save_ckpt=args.save_ckpt,
     )
 
     result = {

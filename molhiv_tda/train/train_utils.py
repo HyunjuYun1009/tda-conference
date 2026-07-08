@@ -167,8 +167,12 @@ def run_training(
     edge_dist_bank: Optional[list[torch.Tensor]] = None,
     balance_test: bool = False,
     test_balance_seed: int = 0,
+    save_ckpt: Optional[Path] = None,
 ) -> Dict[str, float]:
-    optimizer = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=weight_decay)
+    # Only optimize params that require grad, so frozen backbones (fine-tuning)
+    # are left untouched even though they are part of model.parameters().
+    trainable = [p for p in model.parameters() if p.requires_grad]
+    optimizer = torch.optim.Adam(trainable, lr=lr, weight_decay=weight_decay)
     # Hoist feature banks onto the device once so per-epoch calls never re-copy.
     bond_tda = bond_tda.to(device) if bond_tda is not None else None
     mw = mw.to(device) if mw is not None else None
@@ -225,6 +229,11 @@ def run_training(
 
     if best_state is not None:
         model.load_state_dict(best_state)
+        if save_ckpt is not None:
+            save_ckpt = Path(save_ckpt)
+            save_ckpt.parent.mkdir(parents=True, exist_ok=True)
+            torch.save(best_state, save_ckpt)
+            print(f"Saved best model state_dict to {save_ckpt}")
 
     return {"valid_rocauc": best_valid, "test_rocauc": best_test}
 

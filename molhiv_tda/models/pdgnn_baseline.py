@@ -56,7 +56,8 @@ class PDGNNBaseline(torch.nn.Module):
             torch.nn.Linear(2 * emb_dim, num_tasks),
         )
 
-    def encode(self, batch) -> torch.Tensor:
+    def encode_nodes(self, batch) -> torch.Tensor:
+        """Return per-node features (pre-pooling), shape [num_nodes, 2 * emb_dim]."""
         x = self.atom_encoder(batch.x)
         edge_emb = self.bond_encoder(batch.edge_attr)
         if self.edge_phys_proj is not None and hasattr(batch, "edge_phys"):
@@ -69,7 +70,10 @@ class PDGNNBaseline(torch.nn.Module):
             if i < len(self.convs) - 1:
                 x = F.dropout(x, p=self.dropout, training=self.training)
 
-        return global_add_pool(x, batch.batch)
+        return x
+
+    def encode(self, batch) -> torch.Tensor:
+        return global_add_pool(self.encode_nodes(batch), batch.batch)
 
     def forward(self, batch):
         return self.graph_pred(self.encode(batch))
